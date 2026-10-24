@@ -158,7 +158,7 @@ jobs:
           total = 0
           for p in files:
               s = open(p).read()
-              s2, n = re.subn(r'\(int\) args\[[^\]]+\]', r'((Number) args[\1]).intValue()', s)
+              s2, n = re.subn(r'\(int\) args\[([^\]]+)\]', r'((Number) args[\1]).intValue()', s)
               if n:
                   open(p, 'w').write(s2)
                   print(p, 'patched', n, 'cast(s)')
