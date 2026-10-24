@@ -54,11 +54,19 @@ name: Build Bcore AAR
 #   rejects CMake 3.22.1's reported version string "3.22.1-g37088a8"
 #   (the -g git-hash suffix). The build never reached compilation, so
 #   NDK 21's effect on run #5's -Werror errors is STILL UNOBSERVED.
-# - FIX (this version): pin CMake 3.18.1 instead — the era CMake whose
-#   reported version is a clean "3.18.1" that AGP 4.0.1 parses, and new
-#   enough for this build. NDK 21 pin unchanged. If run #7 reaches
-#   compilation and -Werror still trips, the next step is reading the
-#   exact error lines, not guessing a newer NDK.
+# - Run #7 FAILED the SAME way at :Bcore:generateJsonModelRelease:
+#   CMake 3.18.1's SDK package ALSO reports a -g suffixed version
+#   ("3.18.1-g262b901"), which AGP 4.0.1's Revision parser rejects —
+#   the "clean 3.18.1" assumption was WRONG. Lesson: SDK-packaged CMake
+#   binaries carry git-hash suffixes; pinning another SDK CMake version
+#   does not by itself fix the parser rejection.
+# - FIX (this version): pin CMake 3.10.2 instead — run #5 PROVED it
+#   passes AGP 4.0.1's parser (run #5 reached externalNativeBuild with
+#   CMake 3.10.2). NDK 21 pin unchanged. If run #8 reaches compilation
+#   and -Werror still trips, the next step is reading the exact error
+#   lines, not guessing a newer NDK. Fallback if 3.10.2 is unavailable
+#   from sdkmanager: an official cmake.org binary (clean version) with
+#   externalNativeBuild.cmake.path.
 
 permissions:
   contents: write
@@ -94,7 +102,7 @@ jobs:
             "build-tools;28.0.2" \
             "build-tools;30.0.3" \
             "ndk;21.4.7075529" \
-            "cmake;3.18.1"
+            "cmake;3.10.2"
 
       - name: Set up JDK 11 (for Gradle 6.1.1 / AGP 4.0.1 build)
         uses: actions/setup-java@v4
@@ -127,7 +135,7 @@ jobs:
           import re
           for p in ('engine/Bcore/build.gradle', 'engine/Bcore/pine-core/build.gradle'):
               s = open(p).read()
-              s2, n = re.subn(r'(\n([ \t]*)path\s+[^\n]*CMakeLists\.txt[^\n]*\n)', r'\1\2version "3.18.1"\n', s)
+              s2, n = re.subn(r'(\n([ \t]*)path\s+[^\n]*CMakeLists\.txt[^\n]*\n)', r'\1\2version "3.10.2"\n', s)
               assert n == 1, (p, n)
               open(p, 'w').write(s2)
               print(p, 'cmake version pinned')
