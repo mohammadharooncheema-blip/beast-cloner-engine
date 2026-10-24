@@ -17,10 +17,22 @@ name: Build Bcore AAR
 #   under JDK 11 failed too — because the runner's preinstalled
 #   cmdline-tools "latest" is now ALSO 16.0 (class file 61.0 = Java 17),
 #   not the old 12.0 it used to be. JDK 11 cannot run it at all.
-# - COMBINED FIX (this version): no setup-android action; JDK 17 for the
-#   SDK-packages install step (the current sdkmanager 16.0 requires it),
-#   then JDK 11 for the Gradle 6.1.1 / AGP 4.0.1 build (which requires
-#   JDK 11). Both earlier fixes composed.
+# - COMBINED FIX: no setup-android action; JDK 17 for the SDK-packages
+#   install step (the current sdkmanager 16.0 requires it), then JDK 11
+#   for the Gradle 6.1.1 / AGP 4.0.1 build (which requires JDK 11).
+#   This got run #4 past setup for the first time — all setup steps passed.
+# DEPENDENCY HISTORY:
+# - Run #4 reached the real build, then failed resolving
+#   me.weishu:free_reflection:3.0.1 — it is not on JCenter (dead since the
+#   Bintray sunset), Maven Central, Google, or JitPack under those
+#   coordinates. BlackBox uses exactly one API from it:
+#   me.weishu.reflection.Reflection.unseal(Context) in BlackBoxCore.
+# - FIX: a Gradle init script adds the Aliyun JCenter mirror
+#   (maven.aliyun.com/repository/jcenter) to every project's repositories,
+#   so the ORIGINAL 3.0.1 artifact resolves unchanged — no code or
+#   version change. If the mirror lacks it, the next fallback is the
+#   JitPack coordinate com.github.tiann:FreeReflection (same library,
+#   same Java package) or vendoring the library source.
 # Starting versions only — if the native build errors, adjust the NDK/CMake
 # pins per the error (AGP 4.0.1-era native code may want an older NDK).
 
@@ -72,9 +84,20 @@ jobs:
         with:
           gradle-version: 6.1.1
 
+      - name: Add JCenter mirror (free_reflection lives only on dead JCenter)
+        run: |
+          cat > /tmp/jcenter-mirror.init.gradle <<'EOF'
+          allprojects {
+              repositories {
+                  maven { url 'https://maven.aliyun.com/repository/jcenter' }
+              }
+          }
+          EOF
+          cat /tmp/jcenter-mirror.init.gradle
+
       - name: Build Bcore release AAR
         working-directory: engine
-        run: gradle :Bcore:assembleRelease --no-daemon --stacktrace
+        run: gradle :Bcore:assembleRelease --no-daemon --stacktrace -I /tmp/jcenter-mirror.init.gradle
 
       - name: Upload Bcore AAR as artifact
         uses: actions/upload-artifact@v4
