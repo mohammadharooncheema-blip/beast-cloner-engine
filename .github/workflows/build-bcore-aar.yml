@@ -60,13 +60,19 @@ name: Build Bcore AAR
 #   the "clean 3.18.1" assumption was WRONG. Lesson: SDK-packaged CMake
 #   binaries carry git-hash suffixes; pinning another SDK CMake version
 #   does not by itself fix the parser rejection.
-# - FIX (this version): pin CMake 3.10.2 instead — run #5 PROVED it
-#   passes AGP 4.0.1's parser (run #5 reached externalNativeBuild with
-#   CMake 3.10.2). NDK 21 pin unchanged. If run #8 reaches compilation
-#   and -Werror still trips, the next step is reading the exact error
-#   lines, not guessing a newer NDK. Fallback if 3.10.2 is unavailable
-#   from sdkmanager: an official cmake.org binary (clean version) with
-#   externalNativeBuild.cmake.path.
+# - Run #8 FAILED EARLIER, at "Install SDK packages": sdkmanager
+#   reported "Failed to find package 'cmake;3.10.2'" — Google no longer
+#   lists CMake 3.10.2 in the SDK repository. Run #5 used the RUNNER'S
+#   PREINSTALLED 3.10.2, never an sdkmanager install, which is why the
+#   pin could not be installed now.
+# - FIX (this version): back to CMake 3.18.1 (sdkmanager CAN install
+#   it, proven in run #7), but replace its binary with the OFFICIAL
+#   Kitware 3.18.1 binary, which reports a clean "3.18.1" with no -g
+#   suffix — the SDK package's binary is the -g suffixed one AGP 4.0.1
+#   rejects. The SDK package.xml is kept, so AGP still sees CMake
+#   3.18.1 as installed; only bin/ + share/ are swapped. NDK 21 pin
+#   unchanged. The new step prints `cmake --version` so the log proves
+#   the clean version before the build runs.
 
 permissions:
   contents: write
@@ -102,7 +108,7 @@ jobs:
             "build-tools;28.0.2" \
             "build-tools;30.0.3" \
             "ndk;21.4.7075529" \
-            "cmake;3.10.2"
+            "cmake;3.18.1"
 
       - name: Set up JDK 11 (for Gradle 6.1.1 / AGP 4.0.1 build)
         uses: actions/setup-java@v4
@@ -135,11 +141,22 @@ jobs:
           import re
           for p in ('engine/Bcore/build.gradle', 'engine/Bcore/pine-core/build.gradle'):
               s = open(p).read()
-              s2, n = re.subn(r'(\n([ \t]*)path\s+[^\n]*CMakeLists\.txt[^\n]*\n)', r'\1\2version "3.10.2"\n', s)
+              s2, n = re.subn(r'(\n([ \t]*)path\s+[^\n]*CMakeLists\.txt[^\n]*\n)', r'\1\2version "3.18.1"\n', s)
               assert n == 1, (p, n)
               open(p, 'w').write(s2)
               print(p, 'cmake version pinned')
           PY
+
+      - name: Use official CMake binary (clean version string)
+        run: |
+          SDK_ROOT="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
+          cd /tmp
+          curl -fsSL -o cmake.tar.gz https://cmake.org/files/v3.18/cmake-3.18.1-Linux-x86_64.tar.gz || curl -fsSL -o cmake.tar.gz https://github.com/Kitware/CMake/releases/download/v3.18.1/cmake-3.18.1-Linux-x86_64.tar.gz
+          mkdir -p /tmp/cmake-official
+          tar -xzf cmake.tar.gz -C /tmp/cmake-official --strip-components=1
+          rm -rf "$SDK_ROOT/cmake/3.18.1/bin" "$SDK_ROOT/cmake/3.18.1/share"
+          cp -r /tmp/cmake-official/bin /tmp/cmake-official/share "$SDK_ROOT/cmake/3.18.1/"
+          "$SDK_ROOT/cmake/3.18.1/bin/cmake" --version
 
       - name: Build Bcore release AAR
         working-directory: engine
