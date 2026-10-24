@@ -109,6 +109,28 @@ name: Build Bcore AAR
 #   GetArtMethod (hidden-API artMethod access is itself fragile on
 #   Android 15). The canonicalize0 redirect is then simply missing on
 #   Android 15; the other file hooks still apply and bind survives.
+#
+# ANDROID 15 BIND NPE (run #13): with run #12 installed, clones died at
+#   bind with "NullPointerException: Attempt to read from field
+#   'metaData' on a null object reference in ActivityThread
+#   .handleBindApplication". AOSP Android 15's handleBindApplication
+#   ends with a font-preload block that calls getApplicationInfo and
+#   reads info.metaData WITHOUT a null check — so a null return is
+#   fatal. BlackBox's BPackageManagerService returned null for two
+#   reasons: (1) its getApplicationInfo/getPackageInfo bail out with
+#   null whenever the queried virtual user does not exist — and the
+#   bind-time query runs before BlackBox's re-bind establishes the
+#   clone's user, so it queries with a nonexistent user; (2) its
+#   SharedUserSetting parcel writer writes 3 fields but the CREATOR
+#   reads only 2 (seInfoTargetSdkVersion is dropped), so every load
+#   logs "consumed 160 bytes, but 164 expected" and loses that field.
+#   FIX: (a) host-package queries no longer pass through the
+#   exists() gate; (b) when the queried user does not exist AND the
+#   package is not installed for that user, resolve it in a user
+#   where it IS installed instead of returning null — real users
+#   keep strict isolation (an existing user still gets null for a
+#   package not installed in that user); (c) the CREATOR reads the
+#   third int, matching writeToParcel.
 
 permissions:
   contents: write
@@ -136,7 +158,7 @@ jobs:
           total = 0
           for p in files:
               s = open(p).read()
-              s2, n = re.subn(r'\(int\) args\[([^\]]+)\]', r'((Number) args[\1]).intValue()', s)
+              s2, n = re.subn(r'\(int\) args\[[^\]]+\]', r'((Number) args[\1]).intValue()', s)
               if n:
                   open(p, 'w').write(s2)
                   print(p, 'patched', n, 'cast(s)')
@@ -170,6 +192,72 @@ jobs:
           s = s.replace(old2, new2)
           open(p, 'w').write(s)
           print('JniHook.cpp patched: failed hooks now clear pending exceptions')
+          PY
+
+      - name: Patch Android 15 bind NPE (null ApplicationInfo at bind)
+        run: |
+          python3 - <<'PY'
+          # (a) SharedUserSetting: CREATOR must read the 3rd int it writes
+          p = 'engine/Bcore/src/main/java/top/niunaijun/blackbox/core/system/pm/SharedUserSetting.java'
+          s = open(p).read()
+          old = ("    protected SharedUserSetting(Parcel in) {\n"
+                 "        this.name = in.readString();\n"
+                 "        this.userId = in.readInt();\n"
+                 "    }")
+          new = ("    protected SharedUserSetting(Parcel in) {\n"
+                 "        this.name = in.readString();\n"
+                 "        this.userId = in.readInt();\n"
+                 "        this.seInfoTargetSdkVersion = in.readInt();\n"
+                 "    }")
+          assert s.count(old) == 1, ('SUS creator', s.count(old))
+          open(p, 'w').write(s.replace(old, new))
+          print('SharedUserSetting CREATOR now reads seInfoTargetSdkVersion')
+
+          # (b)+(c) BPackageManagerService: host shortcut first, and a
+          # bogus-user (pre-bind) query resolves in an installed user
+          # instead of returning null (null crashes handleBindApplication)
+          p = 'engine/Bcore/src/main/java/top/niunaijun/blackbox/core/system/pm/BPackageManagerService.java'
+          s = open(p).read()
+          old_a_head = ("    public ApplicationInfo getApplicationInfo(String packageName, int flags, int userId) {\n"
+                        "        if (!sUserManager.exists(userId)) return null;\n")
+          assert s.count(old_a_head) == 1, ('appinfo head', s.count(old_a_head))
+          s = s.replace(old_a_head, "    public ApplicationInfo getApplicationInfo(String packageName, int flags, int userId) {\n")
+          old_a_ret = "                return PackageManagerCompat.generateApplicationInfo(p, flags, ps.readUserState(userId), userId);"
+          new_a_ret = ("                BPackageUserState state = ps.readUserState(userId);\n"
+                       "                int resolvedUserId = userId;\n"
+                       "                if (!sUserManager.exists(userId) && !state.installed) {\n"
+                       "                    for (Map.Entry<Integer, BPackageUserState> e : ps.userState.entrySet()) {\n"
+                       "                        if (e.getValue() != null && e.getValue().installed) {\n"
+                       "                            state = e.getValue();\n"
+                       "                            resolvedUserId = e.getKey();\n"
+                       "                            break;\n"
+                       "                        }\n"
+                       "                    }\n"
+                       "                }\n"
+                       "                return PackageManagerCompat.generateApplicationInfo(p, flags, state, resolvedUserId);")
+          assert s.count(old_a_ret) == 1, ('appinfo ret', s.count(old_a_ret))
+          s = s.replace(old_a_ret, new_a_ret)
+          old_p_head = ("    public PackageInfo getPackageInfo(String packageName, int flags, int userId) {\n"
+                        "        if (!sUserManager.exists(userId)) return null;\n")
+          assert s.count(old_p_head) == 1, ('pkginfo head', s.count(old_p_head))
+          s = s.replace(old_p_head, "    public PackageInfo getPackageInfo(String packageName, int flags, int userId) {\n")
+          old_p_ret = "            return PackageManagerCompat.generatePackageInfo(ps, flags, ps.readUserState(userId), userId);"
+          new_p_ret = ("            BPackageUserState state = ps.readUserState(userId);\n"
+                       "            int resolvedUserId = userId;\n"
+                       "            if (!sUserManager.exists(userId) && !state.installed) {\n"
+                       "                for (Map.Entry<Integer, BPackageUserState> e : ps.userState.entrySet()) {\n"
+                       "                    if (e.getValue() != null && e.getValue().installed) {\n"
+                       "                        state = e.getValue();\n"
+                       "                        resolvedUserId = e.getKey();\n"
+                       "                        break;\n"
+                       "                    }\n"
+                       "                }\n"
+                       "            }\n"
+                       "            return PackageManagerCompat.generatePackageInfo(ps, flags, state, resolvedUserId);")
+          assert s.count(old_p_ret) == 1, ('pkginfo ret', s.count(old_p_ret))
+          s = s.replace(old_p_ret, new_p_ret)
+          open(p, 'w').write(s)
+          print('BPackageManagerService patched: getApplicationInfo + getPackageInfo bind-safe')
           PY
 
       - name: Set up JDK 17 (for SDK packages install)
