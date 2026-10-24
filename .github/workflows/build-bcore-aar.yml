@@ -73,6 +73,15 @@ name: Build Bcore AAR
 #   3.18.1 as installed; only bin/ + share/ are swapped. NDK 21 pin
 #   unchanged. The new step prints `cmake --version` so the log proves
 #   the clean version before the build runs.
+# SIBLING MODULES (run #10): the run #9 Bcore AAR alone is NOT
+#   self-contained — at runtime Bcore touches Pine (black-fake,
+#   black-hook, android-mirror, pine-core incl. its native libpine.so,
+#   pine-xposed, pine-xposed-res), none of which :Bcore:assembleRelease
+#   packages. The integration APK built from it compiles and links but
+#   cannot virtualize without them (exactly 2 dangling Pine refs in
+#   dex). So this workflow now also builds every sibling module's
+#   release AAR and publishes them in the same release; the app build
+#   then unpacks/dexes them alongside Bcore.
 
 permissions:
   contents: write
@@ -162,17 +171,35 @@ jobs:
         working-directory: engine
         run: gradle :Bcore:assembleRelease --no-daemon --stacktrace -I /tmp/jcenter-mirror.init.gradle
 
+      - name: Build sibling engine AARs
+        working-directory: engine
+        run: gradle :Bcore:black-fake:assembleRelease :Bcore:black-hook:assembleRelease :Bcore:pine-core:assembleRelease :Bcore:pine-xposed:assembleRelease :Bcore:pine-xposed-res:assembleRelease :android-mirror:assembleRelease --no-daemon --stacktrace -I /tmp/jcenter-mirror.init.gradle
+
       - name: Upload Bcore AAR as artifact
         uses: actions/upload-artifact@v4
         with:
           name: bcore-aar
-          path: engine/Bcore/build/outputs/aar/*.aar
+          path: |
+            engine/Bcore/build/outputs/aar/*.aar
+            engine/Bcore/black-fake/build/outputs/aar/*.aar
+            engine/Bcore/black-hook/build/outputs/aar/*.aar
+            engine/Bcore/pine-core/build/outputs/aar/*.aar
+            engine/Bcore/pine-xposed/build/outputs/aar/*.aar
+            engine/Bcore/pine-xposed-res/build/outputs/aar/*.aar
+            engine/android-mirror/build/outputs/aar/*.aar
 
       - name: Publish AAR to a release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="bcore-aar-${{ github.run_number }}"
-          gh release create "$TAG" engine/Bcore/build/outputs/aar/*.aar \
+          gh release create "$TAG" \
+            engine/Bcore/build/outputs/aar/*.aar \
+            engine/Bcore/black-fake/build/outputs/aar/*.aar \
+            engine/Bcore/black-hook/build/outputs/aar/*.aar \
+            engine/Bcore/pine-core/build/outputs/aar/*.aar \
+            engine/Bcore/pine-xposed/build/outputs/aar/*.aar \
+            engine/Bcore/pine-xposed-res/build/outputs/aar/*.aar \
+            engine/android-mirror/build/outputs/aar/*.aar \
             --title "Bcore AAR build $TAG" \
             --notes "BlackBox Bcore engine AAR built by GitHub Actions (run ${{ github.run_number }})."
