@@ -94,6 +94,21 @@ name: Build Bcore AAR
 #   Android) and Long (Android 13+) alike. The setHiddenApiExemptions
 #   NoSuchMethodException in the same log is a caught warning, NOT the
 #   crash — left alone.
+# ANDROID 15 NATIVE-HOOK CRASH (run #12): with run #11 installed, the
+#   virtual process got PAST the ClassCastException and died one step
+#   later, in BActivityThread.handleBindApplication -> IOCore.enableRedirect
+#   -> NativeCore.enableIO -> UnixFileSystemHook::init -> JniHook::HookJniFun
+#   for java/io/UnixFileSystem.canonicalize0, with
+#   "NoSuchMethodError: no native method ...canonicalize0..." followed by
+#   SIGABRT ("No pending exception expected"). On Android 15 that method
+#   can no longer be hooked as a native method, so RegisterNatives fails —
+#   and HookJniFun returns WITHOUT clearing the pending exception, so the
+#   very next JNI call aborts the whole process. FIX: make a failed hook
+#   a graceful skip, never a poisoned process — clear the pending
+#   exception after a RegisterNatives failure, and also after a failed
+#   GetArtMethod (hidden-API artMethod access is itself fragile on
+#   Android 15). The canonicalize0 redirect is then simply missing on
+#   Android 15; the other file hooks still apply and bind survives.
 
 permissions:
   contents: write
@@ -128,6 +143,33 @@ jobs:
                   total += n
           assert total >= 24, total
           print('total casts patched:', total)
+          PY
+
+      - name: Patch Android 15 native-hook crash (failed hook must not abort)
+        run: |
+          python3 - <<'PY'
+          p = 'engine/Bcore/src/main/cpp/JniHook/JniHook.cpp'
+          s = open(p).read()
+          old1 = "    auto artMethod = reinterpret_cast<uintptr_t *>(GetArtMethod(env, clazz, method));\n    if (!CheckFlags(artMethod)) {"
+          new1 = ("    auto artMethod = reinterpret_cast<uintptr_t *>(GetArtMethod(env, clazz, method));\n"
+                  "    if (env->ExceptionCheck()) {\n"
+                  "        env->ExceptionClear();\n"
+                  "        ALOGE(\"get art method error. class：%s, method：%s\", class_name, method_name);\n"
+                  "        return;\n"
+                  "    }\n"
+                  "    if (!CheckFlags(artMethod)) {")
+          assert s.count(old1) == 1, ('artMethod guard', s.count(old1))
+          s = s.replace(old1, new1)
+          old2 = "    if (env->RegisterNatives(clazz, gMethods, 1) < 0) {\n        ALOGE(\"jni hook error. class：%s, method：%s\", class_name, method_name);\n        return;\n    }"
+          new2 = ("    if (env->RegisterNatives(clazz, gMethods, 1) < 0) {\n"
+                  "        env->ExceptionClear();\n"
+                  "        ALOGE(\"jni hook error. class：%s, method：%s\", class_name, method_name);\n"
+                  "        return;\n"
+                  "    }")
+          assert s.count(old2) == 1, ('registerNatives clear', s.count(old2))
+          s = s.replace(old2, new2)
+          open(p, 'w').write(s)
+          print('JniHook.cpp patched: failed hooks now clear pending exceptions')
           PY
 
       - name: Set up JDK 17 (for SDK packages install)
