@@ -7,6 +7,10 @@ name: Build Bcore AAR
 # source verified locally, root LICENSE is Apache-2.0) at build time and
 # builds :Bcore:assembleRelease from it. This repo holds only this
 # workflow; the built AAR is published to a GitHub Release below.
+# JDK NOTE (fix for run #1 failure): the Android SDK setup downloads
+# cmdline-tools 16.0 whose sdkmanager requires JDK 17, but AGP 4.0.1 /
+# Gradle 6.1.1 requires JDK 11. So the workflow sets up JDK 17 first for
+# SDK tooling, then switches back to JDK 11 for the Gradle build.
 # Starting versions only — if the native build errors, adjust the NDK/CMake
 # pins per the error (AGP 4.0.1-era native code may want an older NDK).
 
@@ -28,11 +32,11 @@ jobs:
       - name: Clone BlackBox engine source (public Apache-2.0 mirror)
         run: git clone --depth 1 https://github.com/warren-bank/mirror-Android-BlackBox.git engine
 
-      - name: Set up JDK 11
+      - name: Set up JDK 17 (for Android SDK tooling)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "11"
+          java-version: "17"
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -41,6 +45,12 @@ jobs:
         run: |
           sdkmanager "ndk;25.2.9519653" "cmake;3.22.1"
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/25.2.9519653" >> "$GITHUB_ENV"
+
+      - name: Set up JDK 11 (for Gradle 6.1.1 / AGP 4.0.1 build)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "11"
 
       - name: Set up Gradle 6.1.1
         uses: gradle/actions/setup-gradle@v3
