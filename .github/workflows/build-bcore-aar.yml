@@ -1,0 +1,67 @@
+name: Build Bcore AAR
+
+# Beast Cloner — cloud build for the BlackBox engine (Bcore) AAR.
+# No local dev machine needed: this runs on GitHub-hosted runners.
+# The engine source is NOT stored in this repo. The workflow clones the
+# public Apache-2.0 mirror (warren-bank/mirror-Android-BlackBox — the same
+# source verified locally, root LICENSE is Apache-2.0) at build time and
+# builds :Bcore:assembleRelease from it. This repo holds only this
+# workflow; the built AAR is published to a GitHub Release below.
+# Starting versions only — if the native build errors, adjust the NDK/CMake
+# pins per the error (AGP 4.0.1-era native code may want an older NDK).
+
+permissions:
+  contents: write
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-aar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout workflow repo
+        uses: actions/checkout@v4
+
+      - name: Clone BlackBox engine source (public Apache-2.0 mirror)
+        run: git clone --depth 1 https://github.com/warren-bank/mirror-Android-BlackBox.git engine
+
+      - name: Set up JDK 11
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "11"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK and CMake
+        run: |
+          sdkmanager "ndk;25.2.9519653" "cmake;3.22.1"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/25.2.9519653" >> "$GITHUB_ENV"
+
+      - name: Set up Gradle 6.1.1
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 6.1.1
+
+      - name: Build Bcore release AAR
+        working-directory: engine
+        run: gradle :Bcore:assembleRelease --no-daemon --stacktrace
+
+      - name: Upload Bcore AAR as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bcore-aar
+          path: engine/Bcore/build/outputs/aar/*.aar
+
+      - name: Publish AAR to a release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="bcore-aar-${{ github.run_number }}"
+          gh release create "$TAG" engine/Bcore/build/outputs/aar/*.aar \
+            --title "Bcore AAR build $TAG" \
+            --notes "BlackBox Bcore engine AAR built by GitHub Actions (run ${{ github.run_number }})."
