@@ -30,11 +30,26 @@ name: Build Bcore AAR
 # - FIX: a Gradle init script adds the Aliyun JCenter mirror
 #   (maven.aliyun.com/repository/jcenter) to every project's repositories,
 #   so the ORIGINAL 3.0.1 artifact resolves unchanged — no code or
-#   version change. If the mirror lacks it, the next fallback is the
-#   JitPack coordinate com.github.tiann:FreeReflection (same library,
-#   same Java package) or vendoring the library source.
-# Starting versions only — if the native build errors, adjust the NDK/CMake
-# pins per the error (AGP 4.0.1-era native code may want an older NDK).
+#   version change. Run #5 proved the mirror works (no more resolution
+#   error). If the mirror ever lacks it, the fallback is the JitPack
+#   coordinate com.github.tiann:FreeReflection (same library, same Java
+#   package) or vendoring the library source.
+# NATIVE-BUILD HISTORY:
+# - Run #5 got into real compilation, then failed at
+#   :Bcore:pine-core:externalNativeBuildRelease with 14 errors in
+#   jni_bridge.cpp / scoped-reference code. Root cause: NO ndkVersion or
+#   cmake.version is declared anywhere in the project, so AGP 4.0.1 fell
+#   back to its defaults — CMake 3.10.2 (too old to detect the compiler,
+#   says so in its own warning) and the NEWEST installed NDK, 30.x, whose
+#   new Clang trips pine-core's -Wall -Wextra -Werror flags on this
+#   2020-era code. ANDROID_NDK_HOME is ignored by AGP 4.0.1 (deprecated),
+#   which is why installing NDK 25 did not help.
+# - FIX: pin the ERA versions — NDK 21.4.7075529 (the NDK this code was
+#   written against) via local.properties ndk.dir, and CMake 3.22.1 via
+#   cmake.version in the two live native modules (Bcore, pine-core;
+#   pine-xposed-res's native block is commented out, pine-xposed has
+#   none). If NDK 21 still trips -Werror, the next step is reading the
+#   exact error lines, not guessing a newer NDK.
 
 permissions:
   contents: write
@@ -69,9 +84,8 @@ jobs:
             "platforms;android-30" \
             "build-tools;28.0.2" \
             "build-tools;30.0.3" \
-            "ndk;25.2.9519653" \
+            "ndk;21.4.7075529" \
             "cmake;3.22.1"
-          echo "ANDROID_NDK_HOME=$SDK_ROOT/ndk/25.2.9519653" >> "$GITHUB_ENV"
 
       - name: Set up JDK 11 (for Gradle 6.1.1 / AGP 4.0.1 build)
         uses: actions/setup-java@v4
@@ -94,6 +108,21 @@ jobs:
           }
           EOF
           cat /tmp/jcenter-mirror.init.gradle
+
+      - name: Pin era NDK + CMake for the 2020-era native code
+        run: |
+          SDK_ROOT="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
+          printf 'sdk.dir=%s\nndk.dir=%s/ndk/21.4.7075529\n' "$SDK_ROOT" "$SDK_ROOT" > engine/local.properties
+          cat engine/local.properties
+          python3 - <<'PY'
+          import re
+          for p in ('engine/Bcore/build.gradle', 'engine/Bcore/pine-core/build.gradle'):
+              s = open(p).read()
+              s2, n = re.subn(r'(\n([ \t]*)path\s+[^\n]*CMakeLists\.txt[^\n]*\n)', r'\1\2version "3.22.1"\n', s)
+              assert n == 1, (p, n)
+              open(p, 'w').write(s2)
+              print(p, 'cmake version pinned')
+          PY
 
       - name: Build Bcore release AAR
         working-directory: engine
