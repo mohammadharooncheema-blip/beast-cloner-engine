@@ -131,6 +131,18 @@ name: Build Bcore AAR
 #   keep strict isolation (an existing user still gets null for a
 #   package not installed in that user); (c) the CREATOR reads the
 #   third int, matching writeToParcel.
+#
+# POST-BIND WEDGE — DIAGNOSTIC ONLY (run #15): with run #14 installed,
+#   clones pass bind (process alive, GC healthy, heap growing) but the
+#   first activity never draws past its starting window: TikTok sticks
+#   on its splash logo, other apps on a black/blank screen, input goes
+#   nowhere, no crash, no ANR. Logcat cannot show WHERE the main
+#   thread is blocked, so this step adds a watchdog: 20s after bind,
+#   a background thread dumps every thread's stack to logcat under
+#   tag BeastDiag (chunked so logd does not truncate). The dump still
+#   fires even if the main thread is blocked, because it runs off the
+#   main looper. No behavior change — pure diagnostics. The app-side
+#   Log dikhao filter gains the beastdiag keyword for this build.
 
 permissions:
   contents: write
@@ -258,6 +270,71 @@ jobs:
           s = s.replace(old_p_ret, new_p_ret)
           open(p, 'w').write(s)
           print('BPackageManagerService patched: getApplicationInfo + getPackageInfo bind-safe')
+          PY
+
+      - name: Patch diagnostic thread-dump watchdog (BeastDiag)
+        run: |
+          python3 - <<'PY'
+          p = 'engine/Bcore/src/main/java/top/niunaijun/blackbox/app/BActivityThread.java'
+          s = open(p).read()
+          anchor = ("        try {\n"
+                    "            CrashHandler.create();\n"
+                    "        } catch (Throwable ignored) {\n"
+                    "        }\n")
+          assert s.count(anchor) == 1, ('watchdog anchor', s.count(anchor))
+          code = r'''          try {
+              CrashHandler.create();
+          } catch (Throwable ignored) {
+          }
+
+          // DIAGNOSTIC (v0.15-diag): 20s after bind, dump every thread's
+          // stack to logcat under tag BeastDiag, chunked so logd does not
+          // truncate. Runs on a background thread so it still fires even
+          // if the main thread is blocked during launch.
+          try {
+              Thread beastDiagWatchdog = new Thread(new Runnable() {
+                  @Override
+                  public void run() {
+                      try {
+                          Thread.sleep(20000);
+                      } catch (InterruptedException ignored) {
+                          return;
+                      }
+                      try {
+                          StringBuilder sb = new StringBuilder();
+                          sb.append("BEASTDIAG thread dump for ").append(packageName).append(" / ").append(processName);
+                          for (Map.Entry<Thread, StackTraceElement[]> e : Thread.getAllStackTraces().entrySet()) {
+                              Thread t = e.getKey();
+                              sb.append("\nTHREAD ").append(t.getName()).append(" state=").append(t.getState());
+                              for (StackTraceElement st : e.getValue()) {
+                                  sb.append("\n  at ").append(st.toString());
+                              }
+                          }
+                          String dump = sb.toString();
+                          int start = 0;
+                          int part = 0;
+                          while (start < dump.length()) {
+                              int end = Math.min(start + 3000, dump.length());
+                              if (end < dump.length()) {
+                                  int nl = dump.lastIndexOf('\n', end);
+                                  if (nl > start) {
+                                      end = nl;
+                                  }
+                              }
+                              android.util.Log.e("BeastDiag", "part " + part + ":\n" + dump.substring(start, end));
+                              part++;
+                              start = end;
+                          }
+                      } catch (Throwable ignored) {
+                      }
+                  }
+              });
+              beastDiagWatchdog.setName("BeastDiagWatchdog");
+              beastDiagWatchdog.start();
+          } catch (Throwable ignored) {
+          }'''
+          open(p, 'w').write(s.replace(anchor, code, 1))
+          print('BeastDiag watchdog patched into BActivityThread.handleBindApplication')
           PY
 
       - name: Set up JDK 17 (for SDK packages install)
