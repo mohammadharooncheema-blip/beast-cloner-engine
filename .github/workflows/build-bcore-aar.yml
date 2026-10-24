@@ -143,6 +143,24 @@ name: Build Bcore AAR
 #   fires even if the main thread is blocked, because it runs off the
 #   main looper. No behavior change — pure diagnostics. The app-side
 #   Log dikhao filter gains the beastdiag keyword for this build.
+#
+# LAUNCH-PATH LOGGING — DIAGNOSTIC ONLY (run #16, v0.16-diag2): the
+#   18:14 BeastDiag dump proved the virtual main thread is IDLE, not
+#   blocked — so the activity-launch transaction stalls before/at
+#   delivery. But the launch path logs NOTHING: HCallbackProxy never
+#   logs on EXECUTE_TRANSACTION, and ProxyActivity.onCreate logs only
+#   under a tag the app's Log dikhao filter drops. So today's log
+#   cannot answer whether the transaction arrived, whether the
+#   LaunchActivityItem was found, or whether the stub ever ran. This
+#   step adds BeastDiag logs at exactly those three points (all under
+#   tag BeastDiag, so the existing app filter keeps them): (1) every
+#   EXECUTE_TRANSACTION receipt in HCallbackProxy.handleMessage,
+#   (2) launch-item/intent null cases + the launch intent itself in
+#   handleLaunchActivity, (3) launching-record null in the isS branch,
+#   (4) the stub target (or null) in ProxyActivity.onCreate. The
+#   v0.15 thread-dump watchdog stays. No behavior change — the logs
+#   only reveal which side of the launch is broken, so the fix after
+#   this build is targeted, not guessed.
 
 permissions:
   contents: write
@@ -335,6 +353,59 @@ jobs:
           }'''
           open(p, 'w').write(s.replace(anchor, code, 1))
           print('BeastDiag watchdog patched into BActivityThread.handleBindApplication')
+          PY
+
+      - name: Patch launch-path BeastDiag logging (v0.16-diag2)
+        run: |
+          python3 - <<'PY'
+          # HCallbackProxy: log transaction receipt, item/intent nulls,
+          # the launch intent, and the isS launching-record null check.
+          p = 'engine/Bcore/src/main/java/top/niunaijun/blackbox/fake/service/HCallbackProxy.java'
+          s = open(p).read()
+          old = ("                    if (msg.what == BRActivityThreadH.get().EXECUTE_TRANSACTION()) {\n"
+                 "                        if (handleLaunchActivity(msg.obj)) {")
+          new = ("                    if (msg.what == BRActivityThreadH.get().EXECUTE_TRANSACTION()) {\n"
+                 "                        android.util.Log.e(\"BeastDiag\", \"HCallback EXECUTE_TRANSACTION received\");\n"
+                 "                        if (handleLaunchActivity(msg.obj)) {")
+          assert s.count(old) == 1, ('exec txn branch', s.count(old))
+          s = s.replace(old, new)
+          old = ("        if (r == null)\n"
+                 "            return false;")
+          new = ("        if (r == null) {\n"
+                 "            android.util.Log.e(\"BeastDiag\", \"HCallback launch item NOT FOUND\");\n"
+                 "            return false;\n"
+                 "        }")
+          assert s.count(old) == 1, ('item null', s.count(old))
+          s = s.replace(old, new)
+          old = ("        if (intent == null)\n"
+                 "            return false;")
+          new = ("        if (intent == null) {\n"
+                 "            android.util.Log.e(\"BeastDiag\", \"HCallback launch intent null\");\n"
+                 "            return false;\n"
+                 "        }\n"
+                 "        android.util.Log.e(\"BeastDiag\", \"HCallback launch intent=\" + intent);")
+          assert s.count(old) == 1, ('intent null', s.count(old))
+          s = s.replace(old, new)
+          old = ("                Object record = BRActivityThread.get(BlackBoxCore.mainThread()).getLaunchingActivity(token);")
+          new = ("                Object record = BRActivityThread.get(BlackBoxCore.mainThread()).getLaunchingActivity(token);\n"
+                 "                android.util.Log.e(\"BeastDiag\", \"HCallback launchingRecord null=\" + (record == null));")
+          assert s.count(old) == 1, ('launching record', s.count(old))
+          s = s.replace(old, new)
+          open(p, 'w').write(s)
+          print('HCallbackProxy launch-path logging patched')
+          # ProxyActivity: log the stub target (or null) under BeastDiag.
+          p = 'engine/Bcore/src/main/java/top/niunaijun/blackbox/proxy/ProxyActivity.java'
+          s = open(p).read()
+          old = "        ProxyActivityRecord record = ProxyActivityRecord.create(getIntent());"
+          new = ("        ProxyActivityRecord record = ProxyActivityRecord.create(getIntent());\n"
+                 "        if (record.mTarget != null) {\n"
+                 "            Log.e(\"BeastDiag\", \"ProxyActivity target=\" + record.mTarget);\n"
+                 "        } else {\n"
+                 "            Log.e(\"BeastDiag\", \"ProxyActivity target=null\");\n"
+                 "        }")
+          assert s.count(old) == 1, ('proxy record', s.count(old))
+          open(p, 'w').write(s.replace(old, new))
+          print('ProxyActivity launch-path logging patched')
           PY
 
       - name: Set up JDK 17 (for SDK packages install)
