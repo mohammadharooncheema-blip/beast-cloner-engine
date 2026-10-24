@@ -7,17 +7,20 @@ name: Build Bcore AAR
 # source verified locally, root LICENSE is Apache-2.0) at build time and
 # builds :Bcore:assembleRelease from it. This repo holds only this
 # workflow; the built AAR is published to a GitHub Release below.
-# SDK NOTES (fixes for run #1 and run #2 failures):
-# - Run #1 failed because android-actions/setup-android@v3 downloads
-#   cmdline-tools 16.0 whose sdkmanager requires JDK 17, but the project
-#   needs JDK 11. Run #2 then failed because that same action tries to
+# SDK/JDK HISTORY (three failed runs, each fixed in turn):
+# - Run #1: android-actions/setup-android@v3 downloaded cmdline-tools 16.0
+#   whose sdkmanager requires JDK 17, but the workflow had only JDK 11.
+# - Run #2: with JDK 17 the licenses passed, but that same action tries to
 #   install the obsolete "tools" package, which no longer exists in the
 #   SDK repository ("Failed to find package 'tools'").
-# - FIX: no setup-android action at all. The runner already ships an
-#   Android SDK (ANDROID_SDK_ROOT) with cmdline-tools 12.0, which works
-#   fine under JDK 11. This workflow installs what the build needs
-#   (platform android-30, build-tools, NDK, CMake) with that preinstalled
-#   sdkmanager, then builds under JDK 11 (Gradle 6.1.1 / AGP 4.0.1).
+# - Run #3: dropping the action and using the PREINSTALLED sdkmanager
+#   under JDK 11 failed too — because the runner's preinstalled
+#   cmdline-tools "latest" is now ALSO 16.0 (class file 61.0 = Java 17),
+#   not the old 12.0 it used to be. JDK 11 cannot run it at all.
+# - COMBINED FIX (this version): no setup-android action; JDK 17 for the
+#   SDK-packages install step (the current sdkmanager 16.0 requires it),
+#   then JDK 11 for the Gradle 6.1.1 / AGP 4.0.1 build (which requires
+#   JDK 11). Both earlier fixes composed.
 # Starting versions only — if the native build errors, adjust the NDK/CMake
 # pins per the error (AGP 4.0.1-era native code may want an older NDK).
 
@@ -39,11 +42,11 @@ jobs:
       - name: Clone BlackBox engine source (public Apache-2.0 mirror)
         run: git clone --depth 1 https://github.com/warren-bank/mirror-Android-BlackBox.git engine
 
-      - name: Set up JDK 11
+      - name: Set up JDK 17 (for SDK packages install)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "11"
+          java-version: "17"
 
       - name: Install SDK packages (preinstalled sdkmanager)
         run: |
@@ -57,6 +60,12 @@ jobs:
             "ndk;25.2.9519653" \
             "cmake;3.22.1"
           echo "ANDROID_NDK_HOME=$SDK_ROOT/ndk/25.2.9519653" >> "$GITHUB_ENV"
+
+      - name: Set up JDK 11 (for Gradle 6.1.1 / AGP 4.0.1 build)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "11"
 
       - name: Set up Gradle 6.1.1
         uses: gradle/actions/setup-gradle@v3
