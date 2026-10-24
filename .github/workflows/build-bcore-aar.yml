@@ -82,6 +82,18 @@ name: Build Bcore AAR
 #   dex). So this workflow now also builds every sibling module's
 #   release AAR and publishes them in the same release; the app build
 #   then unpacks/dexes them alongside Bcore.
+# ANDROID 13+ LONG-FLAGS CRASH (run #11): on the user's Android 15
+#   phone, every virtual launch died in ActivityThread.handleBindApplication
+#   with "java.lang.Long cannot be cast to java.lang.Integer" at
+#   IPackageManagerProxy$GetApplicationInfo.hook (line 243):
+#   `int flags = (int) args[1]`. Android 13 changed the PackageManager
+#   AIDL flags params from int to long, so the framework passes a Long
+#   where this 2020-era engine casts to int. FIX: a patch step rewrites
+#   all 24 `(int) args[...]` casts in the fake/service proxies to
+#   `((Number) args[...]).intValue()`, which accepts Integer (old
+#   Android) and Long (Android 13+) alike. The setHiddenApiExemptions
+#   NoSuchMethodException in the same log is a caught warning, NOT the
+#   crash — left alone.
 
 permissions:
   contents: write
@@ -100,6 +112,23 @@ jobs:
 
       - name: Clone BlackBox engine source (public Apache-2.0 mirror)
         run: git clone --depth 1 https://github.com/warren-bank/mirror-Android-BlackBox.git engine
+
+      - name: Patch Android 13+ long-flags crash (ClassCastException)
+        run: |
+          python3 - <<'PY'
+          import re, glob
+          files = glob.glob('engine/Bcore/src/main/java/top/niunaijun/blackbox/fake/service/**/*.java', recursive=True)
+          total = 0
+          for p in files:
+              s = open(p).read()
+              s2, n = re.subn(r'\(int\) args\[([^\]]+)\]', r'((Number) args[\1]).intValue()', s)
+              if n:
+                  open(p, 'w').write(s2)
+                  print(p, 'patched', n, 'cast(s)')
+                  total += n
+          assert total >= 24, total
+          print('total casts patched:', total)
+          PY
 
       - name: Set up JDK 17 (for SDK packages install)
         uses: actions/setup-java@v4
